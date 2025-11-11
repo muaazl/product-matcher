@@ -7,7 +7,7 @@ function onOpen() {
 
 function writeResultsToSheet(results, thresholds) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('SPAR (Gampaha)');
+  const sheet = ss.getSheetByName('TaggingSheet');
   if (!sheet) throw new Error("Could not find 'TaggingSheet' to write results to.");
   if (results.length === 0) return;
 
@@ -183,7 +183,7 @@ function getDictionaryData() {
 
 function getTaggingSKUs() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const taggingSheet = ss.getSheetByName('SPAR (Gampaha)');
+  const taggingSheet = ss.getSheetByName('TaggingSheet');
   if (!taggingSheet) throw new Error('SHEET NOT FOUND: "TaggingSheet" tab is missing.');
   if (taggingSheet.getLastRow() <= 1) return [];
   return taggingSheet.getRange(2, 1, taggingSheet.getLastRow() - 1, 1).getValues().flat().filter(sku => sku && sku.trim() !== '');
