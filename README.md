@@ -1,15 +1,3 @@
-**3. Update the Script File**
-
-*   Open the `Code.gs` file in your editor.
-*   **Delete all the old code** from version 1 that is currently in the file.
-*   **Copy and paste the entire new script** (the V2 script you just provided) into the `Code.gs` file.
-*   Save the file.
-
-**4. Update the `README.md` file for this branch**
-
-Your project's documentation needs to reflect the new features and setup. Replace the entire content of your `README.md` file with the text below, which describes V2.
-
-```markdown
 # SKU Tagger V2 (Google Apps Script)
 
 This is the second version of the SKU Tagger, built as a Google Apps Script to run directly within a Google Sheet. It includes an improved V2 matching algorithm and retains the original V1 logic as a legacy option.
