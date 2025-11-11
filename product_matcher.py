@@ -193,7 +193,6 @@ if __name__ == "__main__":
                 print(f"  ...ERROR processing {filename}: {e}. Skipping this file.")
                 continue
 
-        # --- PHASE 5: COMPLETION ---
         main_end_time = time.time()
         print("\n" + "="*50)
         print("          BATCH PROCESSING COMPLETE!")
