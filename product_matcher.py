@@ -1,40 +1,33 @@
 import pandas as pd
 from sentence_transformers import SentenceTransformer, util
-from thefuzz import fuzz
 import re
 import time
-import sys
 import os
 
 EXCEL_FILE_NAME = 'Outlet_Tagging.xlsx'
 INPUT_FOLDER = 'Tagging Outlets'
+RESULTS_FOLDER = 'Results Folder'
 
 DICTIONARY_TAB = 'Dictionary'
 BRANDS_TAB = 'Brands'
 
 DICT_SKU_COL = 'Product Name'
-DICT_VISIBLE_KW_COL = 'Generic Keyword Visible'
-DICT_NONVISIBLE_KW_COL = 'Generic Keyword Not Visible'
-DICT_CATEGORY_COL = 'Category'
-DICT_BASTYPE_COL = 'Basic Type'
 TAG_SKU_COL = 'Name'
 BRANDS_COL = 'Brand Name'
 
 SEMANTIC_SCORE_WEIGHT = 0.55
 KEYWORD_SCORE_WEIGHT = 0.35
 BRAND_SCORE_WEIGHT = 0.10
-
-NO_MATCH_THRESHOLD = 75
-
+NO_MATCH_THRESHOLD = 60
 TIE_BREAKER_MARGIN = 2.5
-
 GENERIC_IDENTIFIERS = {'bulk', 'loose', 'local'}
 
 def preprocess_text(text):
+    """Cleans and standardizes input text for processing."""
     if not isinstance(text, str): return ""
     text = text.lower()
     text = text.replace('-', ' ')
-    text = re.sub(r'[\d\.]+(kg|g|ml|l|pcs)\b', '', text)
+    text = re.sub(r'[\d\.]+(kg|g|gm|ml|l|pcs)\b', '', text)
     text = text.replace('(', ' ').replace(')', ' ')
     text = re.sub(r'sku\s*\d+', '', text)
     text = re.sub(r'[^a-z0-9\s]', '', text)
@@ -43,6 +36,7 @@ def preprocess_text(text):
     return re.sub(r'\s+', ' ', query).strip()
 
 def load_brands(xls):
+    """Loads brand names from the 'Brands' tab in the Excel file."""
     try:
         df_brands = pd.read_excel(xls, sheet_name=BRANDS_TAB)
         brand_list = df_brands[BRANDS_COL].dropna().astype(str).str.lower().tolist()
@@ -53,6 +47,7 @@ def load_brands(xls):
         return set()
 
 def extract_brands(processed_text, brand_set):
+    """Finds brands present in a given SKU string."""
     found_brands = set()
     words_in_sku = set(processed_text.split())
     for brand in brand_set:
@@ -61,6 +56,7 @@ def extract_brands(processed_text, brand_set):
     return found_brands
 
 def calculate_brand_score(sku_brands, dict_brands, is_generic_sku):
+    """Calculates a score based on brand matching."""
     if is_generic_sku:
         return 100 if not dict_brands else 0
     if sku_brands and dict_brands:
@@ -71,14 +67,14 @@ def calculate_brand_score(sku_brands, dict_brands, is_generic_sku):
         return 50
 
 def calculate_precise_keyword_score(sku_words, dict_words):
+    """Calculates a score based on exact keyword overlap, with a penalty for mismatches."""
     if not sku_words or not dict_words: return 0
     
     mismatched_words = sku_words.difference(dict_words)
+    penalty_factor = 1.0
     if mismatched_words:
         penalty_factor = 1.0 - (len(mismatched_words) / len(sku_words)) * 0.75
         if penalty_factor < 0: penalty_factor = 0
-    else:
-        penalty_factor = 1.0
 
     intersection = sku_words.intersection(dict_words)
     union = sku_words.union(dict_words)
@@ -87,14 +83,15 @@ def calculate_precise_keyword_score(sku_words, dict_words):
     
     return base_score * penalty_factor
 
-
 if __name__ == "__main__":
     main_start_time = time.time()
     try:
         if not os.path.exists(EXCEL_FILE_NAME): raise FileNotFoundError(f"'{EXCEL_FILE_NAME}' not found.")
-        if not os.path.exists(INPUT_FOLDER): os.makedirs(INPUT_FOLDER)
         
-        print("--- V6.4 Definitive Intelligence: Batch Processing Mode ---")
+        os.makedirs(INPUT_FOLDER, exist_ok=True)
+        os.makedirs(RESULTS_FOLDER, exist_ok=True)
+        
+        print("--- V6.5 Definitive Intelligence: Batch Processing & CSV Output Mode ---")
         print("\nStep 1: Loading central resources (Excel, Brands)...")
         with pd.ExcelFile(EXCEL_FILE_NAME) as xls:
             df_dict = pd.read_excel(xls, sheet_name=DICTIONARY_TAB)
@@ -110,97 +107,128 @@ if __name__ == "__main__":
 
         print(f"\nStep 4: Discovering files in '{INPUT_FOLDER}' folder...")
         files_to_process = [f for f in os.listdir(INPUT_FOLDER) if f.endswith('.csv')]
+        
         if not files_to_process:
             print("\nWARNING: No CSV files found in the 'Tagging Outlets' folder. Nothing to process.")
         else:
             print(f"Found {len(files_to_process)} CSV files to process.")
+            summary_data = []
 
-        for filename in files_to_process:
-            file_start_time = time.time()
-            filepath = os.path.join(INPUT_FOLDER, filename)
-            print(f"\n--- Processing: {filename} ---")
-            
-            try:
-                df_tag = pd.read_csv(filepath, usecols=[0], header=None, names=[TAG_SKU_COL])
-                df_tag.dropna(subset=[TAG_SKU_COL], inplace=True)
-
-                print(f"  ...Loaded {len(df_tag)} SKUs. Preprocessing...")
-                df_tag['processed'] = df_tag[TAG_SKU_COL].astype(str).apply(preprocess_text)
-                df_tag['brands'] = df_tag['processed'].apply(lambda txt: extract_brands(txt, brand_set))
+            for filename in files_to_process:
+                file_start_time = time.time()
+                filepath = os.path.join(INPUT_FOLDER, filename)
+                print(f"\n--- Processing: {filename} ---")
                 
-                print("  ...Starting matching process...")
-                results = []
-                for index, row in df_tag.iterrows():
-                    processed_sku = row['processed']
-                    if not processed_sku: continue
+                try:
+                    df_tag = pd.read_csv(filepath, usecols=[0], header=None, names=[TAG_SKU_COL])
+                    df_tag.dropna(subset=[TAG_SKU_COL], inplace=True)
+                    total_skus = len(df_tag)
 
-                    sku_words = set(processed_sku.split())
-                    is_generic_sku = bool(sku_words.intersection(GENERIC_IDENTIFIERS))
+                    print(f"  ...Loaded {total_skus} SKUs. Preprocessing and matching...")
+                    df_tag['processed'] = df_tag[TAG_SKU_COL].astype(str).apply(preprocess_text)
+                    df_tag['brands'] = df_tag['processed'].apply(lambda txt: extract_brands(txt, brand_set))
                     
-                    sku_embedding = model.encode(processed_sku, convert_to_tensor=True)
-                    hits = util.semantic_search(sku_embedding, dict_embeddings, top_k=10)[0]
-                    
-                    scored_candidates = []
-                    for hit in hits:
-                        dict_index = hit['corpus_id']
-                        cand_row = df_dict.iloc[dict_index]
-                        cand_words = set(cand_row['processed'].split())
+                    results = []
+                    for _, row in df_tag.iterrows():
+                        processed_sku = row['processed']
+                        if not processed_sku: continue
 
-                        semantic_score = hit['score'] * 100
-                        brand_score = calculate_brand_score(row['brands'], cand_row['brands'], is_generic_sku)
-                        precise_keyword_score = calculate_precise_keyword_score(sku_words, cand_words)
+                        sku_words = set(processed_sku.split())
+                        is_generic_sku = bool(sku_words.intersection(GENERIC_IDENTIFIERS))
                         
-                        hybrid_score = (semantic_score * SEMANTIC_SCORE_WEIGHT) + \
-                                       (brand_score * BRAND_SCORE_WEIGHT) + \
-                                       (precise_keyword_score * KEYWORD_SCORE_WEIGHT)
+                        sku_embedding = model.encode(processed_sku, convert_to_tensor=True)
+                        hits = util.semantic_search(sku_embedding, dict_embeddings, top_k=10)[0]
+                        
+                        scored_candidates = []
+                        for hit in hits:
+                            dict_index = hit['corpus_id']
+                            cand_row = df_dict.iloc[dict_index]
+                            cand_words = set(cand_row['processed'].split())
 
-                        scored_candidates.append({
-                            'score': hybrid_score, 'index': dict_index,
-                            'intersection_count': len(sku_words.intersection(cand_words))})
-
-                    scored_candidates.sort(key=lambda x: x['score'], reverse=True)
-                    best_candidate = scored_candidates[0]
-                    second_candidate = scored_candidates[1] if len(scored_candidates) > 1 else None
-
-                    if second_candidate and abs(best_candidate['score'] - second_candidate['score']) < TIE_BREAKER_MARGIN:
-                        if second_candidate['intersection_count'] > best_candidate['intersection_count']:
-                            best_candidate = second_candidate
+                            semantic_score = hit['score'] * 100
+                            brand_score = calculate_brand_score(row['brands'], cand_row['brands'], is_generic_sku)
+                            precise_keyword_score = calculate_precise_keyword_score(sku_words, cand_words)
                             
-                    if best_candidate['score'] < NO_MATCH_THRESHOLD:
-                        debug_reason = f"REJECTED: Best score ({best_candidate['score']:.0f}%) below threshold."
-                        results.append({'SKU_to_Tag': row[TAG_SKU_COL], 'Final_Score': f"{best_candidate['score']:.0f}%", 'Match_Level': 'Low (Rejected)', 'Debug_Reasoning': debug_reason})
-                        continue
+                            hybrid_score = (semantic_score * SEMANTIC_SCORE_WEIGHT) + \
+                                           (brand_score * BRAND_SCORE_WEIGHT) + \
+                                           (precise_keyword_score * KEYWORD_SCORE_WEIGHT)
+
+                            scored_candidates.append({
+                                'score': hybrid_score, 
+                                'index': dict_index,
+                                'intersection_count': len(sku_words.intersection(cand_words))
+                            })
+
+                        scored_candidates.sort(key=lambda x: x['score'], reverse=True)
+                        best_candidate = scored_candidates[0]
+                        if len(scored_candidates) > 1:
+                            second_candidate = scored_candidates[1]
+                            if abs(best_candidate['score'] - second_candidate['score']) < TIE_BREAKER_MARGIN and \
+                               second_candidate['intersection_count'] > best_candidate['intersection_count']:
+                                best_candidate = second_candidate
+                                
+                        if best_candidate['score'] < NO_MATCH_THRESHOLD:
+                            results.append({
+                                'SKU_to_Tag': row[TAG_SKU_COL], 
+                                'Final_Score': f"{best_candidate['score']:.0f}%", 
+                                'Match_Level': 'Low (Rejected)',
+                                'Matched_Dictionary_SKU': '',
+                                'Debug_Reasoning': f"REJECTED: Best score ({best_candidate['score']:.0f}%) below threshold."
+                            })
+                        else:
+                            best_match_row = df_dict.iloc[best_candidate['index']]
+                            results.append({
+                                'SKU_to_Tag': row[TAG_SKU_COL], 
+                                'Final_Score': f"{best_candidate['score']:.0f}%",
+                                'Match_Level': 'High Confidence', 
+                                'Matched_Dictionary_SKU': best_match_row.get(DICT_SKU_COL, ''),
+                                'Debug_Reasoning': f"Final Score: {best_candidate['score']:.0f}%"
+                            })
+
+                    print("  ...Matching complete. Saving results to CSV...")
+                    df_results = pd.DataFrame(results).fillna('')
+                    df_results = df_results[['SKU_to_Tag', 'Matched_Dictionary_SKU', 'Final_Score', 'Match_Level', 'Debug_Reasoning']]
                     
-                    best_match_row = df_dict.iloc[best_candidate['index']]
-                    results.append({
-                        'SKU_to_Tag': row[TAG_SKU_COL], 'Final_Score': f"{best_candidate['score']:.0f}%",
-                        'Match_Level': 'High Confidence', 'Matched_Dictionary_SKU': best_match_row.get(DICT_SKU_COL, ''),
-                        'Debug_Reasoning': f"Final Score: {best_candidate['score']:.0f}%"})
+                    output_filename = f"{os.path.splitext(filename)[0]}_result.csv"
+                    output_filepath = os.path.join(RESULTS_FOLDER, output_filename)
+                    df_results.to_csv(output_filepath, index=False)
+                    
+                    high_confidence_count = len(df_results[df_results['Match_Level'] == 'High Confidence'])
+                    summary_data.append({
+                        'Input File': filename,
+                        'Total SKUs': total_skus,
+                        'High Confidence Matches': high_confidence_count
+                    })
 
-                print("  ...Matching complete. Saving results...")
-                df_results = pd.DataFrame(results).fillna('')
-                df_results = df_results[['SKU_to_Tag', 'Matched_Dictionary_SKU', 'Final_Score', 'Match_Level', 'Debug_Reasoning']]
+                    file_end_time = time.time()
+                    print(f"  ...SUCCESS! Processed in {file_end_time - file_start_time:.2f}s. Results saved to '{output_filepath}'")
+
+                except Exception as e:
+                    print(f"  ...ERROR processing {filename}: {e}. Skipping this file.")
+                    continue
+            
+            if summary_data:
+                print("\n" + "="*50)
+                print("         GENERATING SUMMARY REPORT")
+                print("="*50)
+                df_summary = pd.DataFrame(summary_data)
+                df_summary['Confidence Rate'] = ((df_summary['High Confidence Matches'] / df_summary['Total SKUs']) * 100).map('{:.2f}%'.format)
                 
-                output_sheet_name = f"{os.path.splitext(filename)[0]} Result"
-
-                with pd.ExcelWriter(EXCEL_FILE_NAME, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
-                    df_results.to_excel(writer, sheet_name=output_sheet_name, index=False)
+                summary_filepath = os.path.join(RESULTS_FOLDER, 'processing_summary.csv')
+                df_summary.to_csv(summary_filepath, index=False)
                 
-                file_end_time = time.time()
-                print(f"  ...SUCCESS! Processed {filename} in {file_end_time - file_start_time:.2f}s. Results saved to sheet: '{output_sheet_name}'")
-
-            except Exception as e:
-                print(f"  ...ERROR processing {filename}: {e}. Skipping this file.")
-                continue
-
-        # --- PHASE 5: COMPLETION ---
-        main_end_time = time.time()
-        print("\n" + "="*50)
-        print("          BATCH PROCESSING COMPLETE!")
-        print(f"Total processing time: {main_end_time - main_start_time:.2f} seconds.")
-        print(f"All results have been saved to new sheets in '{EXCEL_FILE_NAME}'.")
-        print("="*50)
+                print("\nSummary of all processed files:")
+                print(df_summary.to_string(index=False))
+                print(f"\nSummary report has been saved to '{summary_filepath}'")
 
     except FileNotFoundError as e: print(f"\nFATAL ERROR: {e}")
     except KeyError as e: print(f"\nFATAL ERROR: A required column is missing from your Excel file: {e}")
     except Exception as e: print(f"\nAn unexpected error occurred during setup: {e}")
+
+    finally:
+        main_end_time = time.time()
+        print("\n" + "="*50)
+        print("          BATCH PROCESSING COMPLETE!")
+        print(f"Total processing time: {main_end_time - main_start_time:.2f} seconds.")
+        print(f"All results have been saved to the '{RESULTS_FOLDER}' folder.")
+        print("="*50)
